@@ -21,7 +21,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
+#include "cJSON.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -40,16 +44,22 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+uint32_t It = 0;
+uint8_t flagRx = 0;
+char RxArr[512] = {0};
 
+double Ax, Ay, Az, Temp;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -57,6 +67,81 @@ static void MX_USART2_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+void _trigger_rx(uint32_t pos){
+	HAL_UART_Receive_IT(&huart1, (uint8_t*)&RxArr[pos], 1);
+}
+
+void _led_on(){
+	HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+}
+
+void _led_off(){
+	HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+}
+
+void _get_accel(cJSON *json, double *x, double *y, double *z, double *temp){
+	cJSON *SensorData, *Accel;
+
+	SensorData = cJSON_GetObjectItemCaseSensitive(json, "Sensor Data");
+	if (SensorData == NULL){
+		Error_Handler();
+	}
+
+	*temp = cJSON_GetNumberValue(cJSON_GetObjectItem(SensorData, "Temp"));
+
+	Accel = cJSON_GetObjectItemCaseSensitive(SensorData, "accelerometer");
+	if (Accel == NULL){
+		Error_Handler();
+	}
+
+	*x = cJSON_GetNumberValue(cJSON_GetObjectItem(Accel, "x"));
+	*y = cJSON_GetNumberValue(cJSON_GetObjectItem(Accel, "y"));
+	*z = cJSON_GetNumberValue(cJSON_GetObjectItem(Accel, "z"));
+}
+
+/* callbacks */
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
+	if (huart->Instance == USART1){
+		if (RxArr[It] == '\0'){
+			flagRx = 1;
+			It = 0;
+		}
+		else{
+			It++;
+			_trigger_rx(It);
+		}
+	}
+}
+
+
+/* regular */
+void _send_start_json(){
+	cJSON *json;
+
+	json = cJSON_CreateObject();
+
+	cJSON_AddStringToObject(json, "Project Name", "G431KB Json Over Uart");
+	cJSON_AddStringToObject(json, "Engineer", "Pablo Jean Rozario");
+	cJSON_AddNumberToObject(json, "Version", 1);
+
+	cJSON *arr = cJSON_CreateArray();
+	cJSON_AddItemToObject(json, "Microcontrollers", arr);
+
+	cJSON *micro;
+	micro = cJSON_CreateString("STM32G431KB");
+	cJSON_AddItemToArray(arr, micro);
+	micro = cJSON_CreateString("STM32F411CE");
+	cJSON_AddItemToArray(arr, micro);
+	micro = cJSON_CreateString("STM32F103C8");
+	cJSON_AddItemToArray(arr, micro);
+
+	char *string = cJSON_PrintUnformatted(json);
+	HAL_UART_Transmit(&huart2, (uint8_t*)string, strlen(string), 100);
+
+	free(string);
+	cJSON_Delete(json);
+}
 /* USER CODE END 0 */
 
 /**
@@ -66,7 +151,8 @@ static void MX_USART2_UART_Init(void);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
+	cJSON *MpuRec;
+	uint8_t Terminate[] = "\r\n\r\n";
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -88,14 +174,34 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  _send_start_json();
 
+  _trigger_rx(0);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  if (flagRx == 1){
+		  _led_on();
+
+		  MpuRec = cJSON_Parse(RxArr);
+		  _get_accel(MpuRec, &Ax, &Ay, &Az, &Temp);
+
+		  char *string = cJSON_Print(MpuRec);
+		  HAL_UART_Transmit(&huart2, (uint8_t*)string, strlen(string), 200);
+		  HAL_UART_Transmit(&huart2, Terminate, sizeof(Terminate), 10);
+
+		  free(string);
+		  cJSON_Delete(MpuRec);
+
+		  _led_off();
+		  _trigger_rx(0);
+		  flagRx = 0;
+	  }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -147,6 +253,54 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart1, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart1, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
 }
 
 /**
